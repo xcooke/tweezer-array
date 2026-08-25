@@ -1,0 +1,33 @@
+[project]
+name = "slm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "xcooke", email = "xander@cookefamily.name" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "imageio>=2.37.4",
+    "jupyter>=1.1.1",
+    "jupyterlab>=4.6.2",
+    "matplotlib>=3.11.1",
+    "numpy>=2.5.1",
+    "pyglet>=2.1.15",
+    "pyqt5==5.15.11",
+    "pyqt5-qt5==5.15.2",
+    "sipyco",
+    "slmsuite>=0.4.1",
+    "thorlabs-tsi-sdk",
+]
+
+[project.scripts]
+slm = "slm:main"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+thorlabs-tsi-sdk = { path = "thorlabs_tsi_camera_python_sdk_package.zip" }
+sipyco = { git = "https://git.m-labs.hk/M-Labs/sipyco.git" }
