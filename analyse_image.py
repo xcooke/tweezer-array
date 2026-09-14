@@ -7,8 +7,7 @@ from matplotlib.colors import TwoSlopeNorm
 import os
 import time
 
-#folder_path = 'characterisations\\2026-08-27_15-47-18'
-folder_path = 'characterisations\\2026-08-28_18-11-29'
+folder_path = 'characterisations\\2026-09-09_17-39-02'
 
 
 # read pickle file

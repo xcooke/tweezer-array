@@ -8,10 +8,14 @@ from math import dist
 from slmsuite.hardware.cameraslms import FourierSLM
 from slmsuite.holography import toolbox
 from slmsuite.holography.algorithms import SpotHologram
+from slmsuite.holography import analysis
 
 from drivers.tweezer_detection import detect_clumps
 from drivers.rearrangement import solve_rearrangement, apply_moves
-
+from drivers.tetris_algorithm import tetris_moves, _apply_batch
+from drivers.tetris_plot import plot_tetris_states
+from drivers.trajectory import calculate_trajectory
+from drivers.batches_to_states import convert_batches_to_states
 
 class SLMCam:
     def __init__(self, cam, slm):
@@ -30,7 +34,11 @@ class SLMCam:
     
         # read 4x4_spot_array_phase.pkl
 
-        phase_array = np.load("4x4_spot_array_phase.pkl", allow_pickle=True)
+        phase_path = f"{self.phase_folder_path}\\phase.pkl"
+
+        print(phase_path)
+
+        phase_array = np.load(phase_path, allow_pickle=True)
 
         self.slm.set_phase(phase_array)
 
@@ -42,79 +50,130 @@ class SLMCam:
 
         print("SLM phase cleared")
 
+
+    def sort_corners(self, points):
+        # points = [(x, y), (x, y), (x, y), (x, y)]
+
+        # require that two smallest y values are the top row
+        # so can't be rotated too much
+
+        # Assuming image coordinates: smaller y = higher/top
+        points = sorted(points, key=lambda p: p[1])
+
+        top = sorted(points[:2], key=lambda p: p[0])
+        bottom = sorted(points[2:], key=lambda p: p[0])
+
+        return {
+            "top_left": top[0],
+            "top_right": top[1],
+            "bottom_left": bottom[0],
+            "bottom_right": bottom[1],
+        }
+
+
+    def plot_target_array(self, corners, spots):
+
+        plt.scatter(spots[:, 0], spots[:, 1], label="spots")
+        plt.scatter(np.array(corners)[:, 0], np.array(corners)[:, 1], label="corners")
+
+        plt.legend()
+        plt.savefig(f"target_arrays/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.png")
+
+
     def generate_slm_array_spots(self, aom_bounds, n):
-        """
-        Generate an n x n grid inside a convex quadrilateral.
 
-        aom_bounds:
-            Four (x, y) corners in ANY order.
+        # pts are in [(x,y), ...]
+        # (0,0) (1,0)
+        # (0,1) (1,1)
 
-        n:
-            Number of spots along each dimension.
+        pts = np.asarray(aom_bounds, dtype=float) # do I need this?
+        print(f"aom_bounds are: {aom_bounds}")
+        print(f"converted into numpy array: {pts}")
 
-        Returns:
-            spots: [[x1, y1], [x2, y2], ...]
-            spot_vectors: [[x1, x2, ...], [y1, y2, ...]]
-        """
+        # sort pts into top left, top right, bottom left, bottom right
 
-        pts = np.asarray(aom_bounds, dtype=float)
+        sorted_pts = self.sort_corners(pts)
 
-        if pts.shape != (4, 2):
-            raise ValueError("aom_bounds must contain exactly four (x, y) points")
+        print(sorted_pts)
 
-        # ------------------------------------------------------------
-        # 1. Put corners into cyclic order around the quadrilateral
-        # ------------------------------------------------------------
+        left_x_max = max(sorted_pts["top_left"][0], sorted_pts["bottom_left"][0])
+        right_x_min = min(sorted_pts["top_right"][0], sorted_pts["bottom_right"][0])
+        top_y_max = max(sorted_pts["top_left"][1], sorted_pts["top_right"][1])
+        bottom_y_min = min(sorted_pts["bottom_left"][1], sorted_pts["bottom_right"][1])
 
-        center = pts.mean(axis=0)
+        # find x side length
 
-        angles = np.arctan2(
-            pts[:, 1] - center[1],
-            pts[:, 0] - center[0]
-        )
+        x_side_length = right_x_min - left_x_max
+        y_side_length = bottom_y_min - top_y_max
 
-        pts = pts[np.argsort(angles)]
+        # find minimum side length to make square
+        side = min(x_side_length, y_side_length)
 
-        # ------------------------------------------------------------
-        # 2. Pick a deterministic starting corner
-        #
-        # Choose the upper-most point (smallest y), breaking ties
-        # using smallest x.
-        # ------------------------------------------------------------
+        # find centre of quadrilateral, hopefully this should work!
 
-        start = np.lexsort((pts[:, 0], pts[:, 1]))[0]
-        pts = np.roll(pts, -start, axis=0)
+        cx = (left_x_max + right_x_min) / 2
+        cy = (top_y_max + bottom_y_min) / 2
 
-        p0, p1, p2, p3 = pts
+        # Axis-aligned square centred on quadrilateral
+        x = np.linspace(cx - side / 2, cx + side / 2, n)
+        y = np.linspace(cy - side / 2, cy + side / 2, n)
 
-        # ------------------------------------------------------------
-        # 3. Bilinear interpolation
-        # ------------------------------------------------------------
+        X, Y = np.meshgrid(x, y)
 
-        u = np.linspace(0.0, 1.0, n)
-        v = np.linspace(0.0, 1.0, n)
-
-        U, V = np.meshgrid(u, v)
-
-        spots = (
-            (1 - U)[..., None] * (1 - V)[..., None] * p0
-            + U[..., None]     * (1 - V)[..., None] * p1
-            + U[..., None]     * V[..., None]       * p2
-            + (1 - U)[..., None] * V[..., None]     * p3
-        )
-
-        # SLM/AOM coordinates must be integer-valued.
-        #spots = np.rint(spots).astype(int)
-        # dont round
-
-        spots = spots.reshape(-1, 2)
-
+        spots = np.column_stack((X.ravel(), Y.ravel()))
         spot_vectors = spots.T
 
         return spot_vectors, spots
 
 
-    def generate_slm_phase_pattern(self, aom_bounds, n):
+    def save_image_stack(self, images, filename, type):
+        n = len(images)
+        cols = int(np.ceil(np.sqrt(n)))
+        rows = int(np.ceil(n / cols))
+
+        fig, axes = plt.subplots(rows, cols, figsize=(10, 10))
+        axes = np.atleast_1d(axes).ravel()
+
+        vmin = np.nanmin(images)
+        vmax = np.nanmax(images)
+
+        for ax, img in zip(axes, images):
+            im = ax.imshow(img, vmin=vmin, vmax=vmax)
+            ax.axis("off")
+
+        for ax in axes[n:]:
+            ax.axis("off")
+
+        fig.colorbar(im, ax=axes.tolist(), shrink=0.8)
+        plt.title(f"Subimages from camera after {type} optimisation")
+        plt.savefig(filename, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+
+    def compare_spot_uniformity(self, hologram, spot_vectors, folder, optimisation_type):
+
+        self.fs.slm.set_phase(hologram.get_phase(), settle=True)                 # Write hologram.
+        self.fs.cam.flush()
+        img = self.fs.cam.get_image()                                        # Grab image.
+
+        plt.imsave(f"{folder}/after_{optimisation_type}_optimisation_camera.png", img)
+        plt.close()
+
+        subimages = analysis.take(img, vectors=spot_vectors, size=4)
+
+        self.save_image_stack(subimages, f"{folder}/after_{optimisation_type}_optimisation_subimages.png", optimisation_type)
+
+        powers = analysis.image_normalization(subimages)
+
+        powers_norm = powers / np.mean(powers)
+        powers_norm_std_gs = np.std(powers_norm)
+
+        plt.hist(powers_norm)
+        plt.title("GS Powers (std={:.2f}%)".format(powers_norm_std_gs * 100))
+        plt.savefig(f"{folder}/after_{optimisation_type}_optimisation_histogram.png", dpi=300, bbox_inches="tight")
+        plt.close()
+
+    def generate_slm_phase_pattern(self, aom_bounds, n, hologram_size=2048):
 
         print(aom_bounds)
 
@@ -127,19 +186,95 @@ class SLMCam:
 
         # write spots to a pickle file for later use
 
-        with open("4x4_spot_array_spots.pkl", "wb") as f:
+        dt = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+        folder = f"slm_spots/{n}x{n}_{dt}"
+        os.makedirs(folder, exist_ok=True)
+
+        spots_filename = f"{folder}/spots.pkl"
+        phase_filename = f"{folder}/phase.pkl"
+
+        with open(spots_filename, "wb") as f:
             pickle.dump(spots, f)
 
-        hologram = SpotHologram(shape=(2048, 2048), spot_vectors=spot_vectors, basis='ij', cameraslm=self.fs)
+        print(f"spot_vectors_ij: {spot_vectors}")
 
-        hologram.optimize('WGS-Kim', feedback='computational_spot', stat_groups=['computational_spot'], maxiter=50)
+        spot_vectors_knm = toolbox.convert_vector(
+            spot_vectors,
+            from_units="ij",
+            to_units="knm",
+            hardware=self.fs,
+        )
+
+        print(f"spot_vectors_knm: {spot_vectors_knm}")
+
+        hologram = SpotHologram(shape=(hologram_size, hologram_size), spot_vectors=spot_vectors, basis='ij', cameraslm=self.fs)
+
+        # optimise computationally
+        hologram.optimize(
+            'WGS-Kim', 
+            feedback='computational_spot', 
+            stat_groups=['computational_spot'], 
+            maxiter=50
+        )
+
+        fig, axs = plt.subplots(1, 2, figsize=(10, 4))
+
+        hologram.plot_farfield(
+            axs=axs,
+            title="Farfield Computational Optimization",
+        )
+
+        # Save using the figure YOU created
+        fig.tight_layout()
+        fig.savefig(f"{folder}/farfield_computational_optimisation.png", dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+
+        self.compare_spot_uniformity(hologram, spot_vectors, folder, "computational")
+
+
+        ## now optimise experimentally
+        """
+        hologram.spot_integration_width_ij = 7
+        hologram.optimize(
+            'WGS-Kim',
+            maxiter=50,
+            feedback='experimental_spot',
+            stat_groups=['computational_spot', 'experimental_spot'],
+            fixed_phase=False
+        )
+
+        
+        fig, axs = plt.subplots(1, 2, figsize=(10, 4))
+
+        hologram.plot_farfield(
+            axs=axs,
+            title="Farfield Experimental Optimization (Not Camera)",
+        )
+
+        # Save using the figure YOU created
+        fig.tight_layout()
+        fig.savefig(f"{folder}/farfield_experimental_optimisation.png", dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+
+        self.compare_spot_uniformity(hologram, spot_vectors, folder, "experimental")
+
+        ax = hologram.plot_stats(show=False)
+        fig = ax.get_figure()
+        fig.savefig(f"{folder}/optimisation_stats.png", dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        """
 
         phase = hologram.get_phase()
 
-        with open("4x4_spot_array_phase.pkl", "wb") as f:
+        with open(phase_filename, "wb") as f:
             pickle.dump(phase, f)
 
         self.slm.set_phase(phase)
+
+        return folder
 
 
     def fourier_calibrate(self):
@@ -148,12 +283,13 @@ class SLMCam:
 
         self.cam.set_exposure(6e-4) # this might need changing...
 
+        
         self.fs.fourier_calibrate(
-            array_center=(500,20),
+            array_center=(480,0), #(500,20)
             array_shape=8,                 # Size of the calibration grid (Nx, Ny) [#]
-            array_pitch=16,                 # Pitch of the calibration grid (x, y) [knm]
-            #plot=2
-        );
+            array_pitch=100, #16                 # Pitch of the calibration grid (x, y) [knm]
+            #plot=2,
+        )
 
         self.fs.save_calibration("fourier")
 
@@ -198,8 +334,8 @@ class SLMCam:
 
         if np.max(image) > 1021:
             raise ValueError(f"Image max value is {np.max(image)} > 1021, not expecting this")
-        if np.max(image) < 200:
-            raise ValueError(f"Image max value is {np.max(image)} < 200, not expecting this")
+        if np.max(image) < 100:
+            raise ValueError(f"Image max value is {np.max(image)} < 100, not expecting this")
 
         # write images to a file as an object
 
@@ -226,7 +362,7 @@ class SLMCam:
     def get_theoretical_slm_tweezer_locations(self):
 
         # read out the theoretical SLM tweezer locations from the pickle file
-        with open("4x4_spot_array_spots.pkl", "rb") as f:
+        with open(f"{self.phase_folder_path}\\spots.pkl", "rb") as f:
             spots = pickle.load(f)
 
         # sort spots by y and then x
@@ -262,9 +398,6 @@ class SLMCam:
 
         print(f"There are {len(tweezer_locations)} tweezer locations")
 
-        if len(tweezer_locations) != 16:
-            raise ValueError(f"There are not 16 tweezer locations, there are {len(tweezer_locations)}")
-
         # check if tweezer_locations is a square number
 
         if int(np.sqrt(len(tweezer_locations)))**2 != len(tweezer_locations):
@@ -283,7 +416,7 @@ class SLMCam:
 
         for row in range(array_size):
 
-            # Get the 4 locations belonging to this row
+            # Get the locations belonging to this row
             row_locations = locations_sorted_by_y[
                 row * array_size:(row + 1) * array_size
             ]
@@ -329,7 +462,7 @@ class SLMCam:
 
             fluorescence_image_regions[(row, column)] = region
 
-        # plot each region in a 4x4 grid
+        # plot each region in array_size x array_size grid
 
         self.plot_regions(fluorescence_image_regions)
 
@@ -342,22 +475,25 @@ class SLMCam:
 
         filled = {}
 
+        number_filled_sites = 0
+
         for site, image in fluorescence_image_regions.items():
             row, column = site
             if np.max(image) > fluorescence_threshold:
                 filled[(row, column)] = 1
+                number_filled_sites += 1
             else:
                 filled[(row, column)] = 0
 
-        return filled, sites
+        return filled, sites, array_size, number_filled_sites
 
     def generate_rearrange_movements(self):
 
-        filled, sites = self.identify_filled_atom_sites()
+        filled, sites, array_size, number_filled_sites = self.identify_filled_atom_sites()
 
         # convert filled into a 2D array
 
-        initial = np.zeros((4, 4), dtype=int)
+        initial = np.zeros((array_size, array_size), dtype=int)
         for site, value in filled.items():
             row, column = site
             initial[row, column] = value
@@ -387,7 +523,84 @@ class SLMCam:
         return moves, sites 
 
 
+    def generate_tetris_rearrange_movements(self, T, dt):
 
+        filled, sites, array_size, number_filled_sites = self.identify_filled_atom_sites()
+
+        # convert filled into a 2D array
+
+        initial = np.zeros((array_size, array_size), dtype=int)
+        for site, value in filled.items():
+            row, column = site
+            initial[row, column] = value
+
+        print("Initial:")
+        print(initial)
+
+        # round down sqrt of number_filled_sites to get target size
+
+        target_size = int(np.floor(np.sqrt(number_filled_sites)))
+
+        # target array is size array_size x array_size of 0s
+        # with a target_size x target_size square of 1s in the centre
+
+        target = np.zeros((array_size, array_size), dtype=int)
+        start_row = (array_size - target_size) // 2
+        start_col = (array_size - target_size) // 2
+        target[start_row:start_row + target_size, start_col:start_col + target_size] = 1
+
+        print("Target:")
+        print(target)
+
+        batches, final_state, extra_atoms = tetris_moves(
+            initial,
+            target,
+            5,
+        )
+
+        print(f"Initial atoms: {initial.sum()}")
+        print(f"Target atoms:  {target.sum()}")
+        print(f"Extra atoms:   {len(extra_atoms)}")
+        print(f"Move batches:  {len(batches)}")
+    
+        for batch in batches:
+            print(batch)
+
+        
+        # ============================================================
+        # Replay moves so that we can save every intermediate state.
+        # ============================================================
+
+        states = [initial.copy()]
+
+        current_state = initial.copy()
+
+        for batch in batches:
+
+            current_state = _apply_batch(
+                current_state,
+                batch["moves"],
+            )
+
+            states.append(
+                current_state.copy()
+            )
+
+        plot_tetris_states(
+            states,
+            target,
+            batches,
+        )
+
+        states = convert_batches_to_states(
+            batches,
+            sites,
+            T,
+            dt,
+            "characterisations\\2026-09-09_17-39-02\\position_calibration.pkl",
+        )
+
+        return states
 
     def close(self):
     

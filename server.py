@@ -13,7 +13,9 @@ from drivers.atoms import Atoms
 
 lut_path = "interpolated_voltage.lut"
 
-camera_hardware = ThorCam()
+camera_hardware = ThorCam(
+    rot = "270",
+)
 
 slm = Meadowlark(lut_path=lut_path, wav_um=.688, settle_time_s=.3)
 
@@ -21,6 +23,8 @@ slm_cam = SLMCam(
     cam=camera_hardware,
     slm=slm,
 )
+
+slm_cam.phase_folder_path = "slm_spots\\5x5_2026-09-09_20-12-13"
 
 #slm_cam.set_phase()
 
@@ -41,6 +45,7 @@ targets = {
     "atoms": atoms,
 }
 
+#camera_hardware.close()
 
 def main():
     print("Server should be running")

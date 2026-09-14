@@ -11,8 +11,7 @@ from scipy.interpolate import LinearNDInterpolator
 # ============================================================
 
 
-#folder = Path(r"characterisations\2026-08-27_15-47-18")
-folder = Path(r'characterisations\2026-08-28_18-11-29')
+folder = Path(r'characterisations\2026-09-09_17-39-02')
 
 file_path = folder / "fit_params.pkl"
 output_path = folder / "position_calibration.pkl"
@@ -338,7 +337,7 @@ plt.show()
 
 x_freq, y_freq, amplitude = query_calibration(
     calibration,
-    [30, 30]
+    [480, 755]
 )
 
 print(f"x frequency : {x_freq:.3f} MHz")

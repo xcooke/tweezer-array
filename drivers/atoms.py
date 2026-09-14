@@ -13,7 +13,7 @@ class Atoms():
 
         self.locations = []
 
-    def load_atoms(self, threshold=500):
+    def load_atoms(self, threshold=500, rng_seed=42):
 
         # reset the atoms list
         self.locations = []
@@ -28,6 +28,10 @@ class Atoms():
         #tweezer_locations = detect_clumps(tweezer_image, threshold=threshold)
 
         tweezer_locations = get_theoretical_slm_tweezer_locations()
+
+        # random set the same seed so same locations happen each time
+
+        random.seed(rng_seed)
 
         # now iterate through tweezer_locations and with probability 0.5, add an atom to self.atoms at that location
 
