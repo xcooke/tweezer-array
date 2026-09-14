@@ -24,10 +24,10 @@ def detect_clumps(arr, threshold=500):
     return [(float(column), float(row)) for row, column in centres]
 
 
-def get_theoretical_slm_tweezer_locations():
+def get_theoretical_slm_tweezer_locations(phase_folder_path):
 
     # read out the theoretical SLM tweezer locations from the pickle file
-    with open("slm_spots\\5x5_2026-09-09_20-12-13\\spots.pkl", "rb") as f:
+    with open(f"{phase_folder_path}\\spots.pkl", "rb") as f:
         spots = pickle.load(f)
 
     # sort spots by y and then x

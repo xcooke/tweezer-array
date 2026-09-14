@@ -24,17 +24,23 @@ slm_cam = SLMCam(
     slm=slm,
 )
 
-slm_cam.phase_folder_path = "slm_spots\\5x5_2026-09-09_20-12-13"
+phase_folder_path = "slm_spots\\5x5_2026-09-09_20-12-13"
 
-#slm_cam.set_phase()
+slm_cam.phase_folder_path = phase_folder_path
+
 
 camera_tweezers = CameraTweezers(camera_hardware=camera_hardware)
 
+
 atoms = Atoms(camera_tweezers=camera_tweezers)
+
+atoms.phase_folder_path = phase_folder_path
+
 
 camera_fluorescence = CameraFluorescence(camera_hardware=camera_hardware, atoms=atoms)
 
 slm_cam.camera_fluorescence = camera_fluorescence
+
 
 targets = {
     "camera_hardware": camera_hardware,

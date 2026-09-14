@@ -27,7 +27,7 @@ class Atoms():
 
         #tweezer_locations = detect_clumps(tweezer_image, threshold=threshold)
 
-        tweezer_locations = get_theoretical_slm_tweezer_locations()
+        tweezer_locations = get_theoretical_slm_tweezer_locations(self.phase_folder_path)
 
         # random set the same seed so same locations happen each time
 
